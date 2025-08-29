@@ -1,0 +1,104 @@
+#This file contains all the R code for  Table4.2  in Chapter 4.2: One-step prediction of the Gaussian HMM 
+#After modifying the dataset file path, it can be directly copied and pasted into R to reproduce the results.
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# Before running this code, make sure to modify the input dataset path in the # 1. Load and prepare data in this code
+
+
+
+
+
+
+# 0. Load package
+if (!requireNamespace("depmixS4", quietly = TRUE)) install.packages("depmixS4")
+library(depmixS4)
+
+# 1. Load and prepare data
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+#Modify "C:/Users/ZhangYinhang/ES_F_data.csv"  to your save path in the below
+
+df <- read.csv("C:/Users/ZhangYinhang/ES_F_data.csv", stringsAsFactors = FALSE)
+df$date  <- as.Date(df$Date)
+df$Close <- df$Close_ES.F
+df <- df[order(df$date), ]
+
+# 2. Define training and test sets
+train_idx <- which(df$date >= "2022-06-23" & df$date <= "2024-12-23")
+test_idx  <- which(df$date >= "2024-12-24" & df$date <= "2025-06-19")
+df_trn <- df[train_idx, ]
+df_tst <- df[test_idx, ]
+
+# 3. Compute log-returns
+df_trn$log_ret <- c(NA, diff(log(df_trn$Close)))
+df_tst$log_ret <- c(NA, diff(log(df_tst$Close)))
+ret_trn <- na.omit(df_trn$log_ret)
+ret_tst <- na.omit(df_tst$log_ret)
+T_trn   <- length(ret_trn)
+T_tst   <- length(ret_tst)
+
+# 4. Fit 3-state HMM
+mod3 <- depmix(ret_trn ~ 1, family = gaussian(), nstates = 3, data = data.frame(ret_trn))
+set.seed(123)
+fit3 <- fit(mod3, verbose = FALSE)
+
+# 5. Extract model parameters
+pars <- getpars(fit3)
+nst  <- 3
+pi0  <- pars[1:nst]
+A_start <- nst + 1
+A_end   <- nst + nst^2
+A <- matrix(pars[A_start:A_end], nrow = nst, byrow = TRUE)
+mu  <- pars[(A_end + 1) + seq(0, by = 2, length.out = nst)]
+sd2 <- pars[(A_end + 1) + seq(1, by = 2, length.out = nst)]
+sigma <- sqrt(sd2)
+
+# 6. Filtering distribution at end of training
+fb <- forwardbackward(fit3)
+alpha <- fb$alpha
+α_T <- alpha[T_trn, ]
+α_T <- α_T / sum(α_T)
+
+# 7. Forecasting loop
+log_scores <- numeric(T_tst)
+pred_mean  <- numeric(T_tst)
+pred_var   <- numeric(T_tst)
+cover90    <- logical(T_tst)
+cover95    <- logical(T_tst)
+
+α_prev <- α_T
+for (i in seq_len(T_tst)) {
+  pred_z_prob <- as.numeric(α_prev %*% A)
+  m <- sum(pred_z_prob * mu)
+  v <- sum(pred_z_prob * (sigma^2 + mu^2)) - m^2
+  pred_mean[i] <- m
+  pred_var[i]  <- v
+  x_obs <- ret_tst[i]
+  f_x <- sum(pred_z_prob * dnorm(x_obs, mean = mu, sd = sigma))
+  log_scores[i] <- log(f_x + .Machine$double.eps)
+  sims <- unlist(lapply(1:nst, function(k) rnorm(5000, mu[k], sigma[k]) * pred_z_prob[k]))
+  q90 <- quantile(sims, probs = c(0.05, 0.95))
+  q95 <- quantile(sims, probs = c(0.025, 0.975))
+  cover90[i] <- (x_obs >= q90[1] && x_obs <= q90[2])
+  cover95[i] <- (x_obs >= q95[1] && x_obs <= q95[2])
+  a_tilde <- pred_z_prob * dnorm(x_obs, mu, sigma)
+  α_prev <- a_tilde / sum(a_tilde)
+}
+
+# 8. Evaluation
+LogScore <- mean(log_scores)
+RMSE     <- sqrt(mean((pred_mean - ret_tst)^2))
+MAE      <- mean(abs(pred_mean - ret_tst))
+Cov90    <- mean(cover90)
+Cov95    <- mean(cover95)
+
+cat("=== Forecast Accuracy ===\n")
+cat(sprintf("Avg Log-Score: %.4f\n", LogScore))
+cat(sprintf("RMSE:         %.5f\n", RMSE))
+cat(sprintf("MAE:          %.5f\n", MAE))
+cat(sprintf("90%% Cov.:    %.2f%%\n", 100 * Cov90))
+cat(sprintf("95%% Cov.:    %.2f%%\n", 100 * Cov95))
