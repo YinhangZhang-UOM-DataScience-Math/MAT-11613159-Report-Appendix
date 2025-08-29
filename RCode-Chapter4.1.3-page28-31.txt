@@ -1,0 +1,160 @@
+#This file contains all the R code for tables and figures in Page 28 to 31 in Chapter 4.1.3: Posterior state decoding and visualization
+#After modifying the dataset file path, it can be directly copied and pasted into R to reproduce the results.
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# Before running this code, make sure to modify the input dataset path in the 1.Load data & compute log returns in this code
+
+
+
+
+
+# ================================
+# 0. Install and load packages
+# ================================
+if (!requireNamespace("depmixS4", quietly=TRUE)) install.packages("depmixS4", dependencies=TRUE)
+if (!requireNamespace("ggplot2",  quietly=TRUE)) install.packages("ggplot2")
+if (!requireNamespace("patchwork", quietly=TRUE)) install.packages("patchwork")
+
+library(depmixS4)
+library(ggplot2)
+library(patchwork)
+
+
+# 1. Load data & compute log returns
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+#Modify "C:/Users/ZhangYinhang/ES_F_data.csv"  to your save path in the below
+
+
+df <- read.csv("C:/Users/ZhangYinhang/ES_F_data.csv", stringsAsFactors=FALSE)
+df$date  <- as.Date(df$Date)
+df$Close <- df$Close_ES.F
+df <- df[order(df$date), ]
+df$log_ret <- c(NA, diff(log(df$Close)))
+
+# ================================
+# 2. Select training sample
+# ================================
+train_df <- subset(df, date >= as.Date("2022-06-23") & date <= as.Date("2024-10-23"))
+
+# ================================
+# 3. Prepare modeling data
+# ================================
+obs      <- na.omit(train_df$log_ret)          # log return
+data_hmm <- data.frame(obs=obs)
+
+# ================================
+# 4. Fit 3-state HMM
+# ================================
+set.seed(123)
+mod3 <- depmix(
+  response = obs ~ 1,          # response variable
+  family   = gaussian(),       # Gaussian distribution
+  nstates  = 3,                # 3 hidden states
+  data     = data_hmm,
+  instart  = rep(1/3, 3),      # initial state probabilities
+  trstart  = matrix(1/3, 3, 3) # initial transition probabilities
+)
+
+fit3 <- fit(mod3, verbose=FALSE)
+
+# ================================
+# 5. Smoothed posterior probabilities
+# ================================
+post3_raw <- posterior(fit3, type="smoothing")
+post3_df  <- as.data.frame(post3_raw)
+names(post3_df) <- c("Prob1", "Prob2", "Prob3")
+
+df_prob <- data.frame(
+  date = train_df$date[-1],   # align with non-NA log returns
+  post3_df
+)
+
+# Print and save
+cat("=== Smoothed posterior probabilities (first 10 rows) ===\n")
+print(head(df_prob, 10))
+write.csv(df_prob,
+          file="C:/Users/ZhangYinhang/posterior_probs_K3.csv",
+          row.names=FALSE, fileEncoding="UTF-8")
+
+# ================================
+# 6. Stacked area plot of posterior probabilities
+# ================================
+state_cols <- c("State 1"="#4E79A7", "State 2"="#F28E2B", "State 3"="#E15759")
+
+p_post <- ggplot(df_prob, aes(x = date)) +
+  geom_area(aes(y = Prob1, fill = "State 1"), alpha = 0.6) +
+  geom_area(aes(y = Prob2, fill = "State 2"), alpha = 0.6) +
+  geom_area(aes(y = Prob3, fill = "State 3"), alpha = 0.6) +
+  scale_fill_manual(name="Hidden states", values=state_cols) +
+  labs(title="Smoothed posterior probabilities (3-state HMM)", 
+       x="Date", y="Posterior probability") +
+  theme_minimal(base_size=14)
+
+windows(); print(p_post)  # On Windows; use quartz() on macOS, X11() on Linux
+
+# ================================
+# 7. Plot probability curves for each state
+# ================================
+plots <- vector("list", length=3)
+for (i in 1:3) {
+  plots[[i]] <- ggplot(df_prob, aes(x=date, y=.data[[paste0("Prob", i)]])) +
+    geom_line(color=state_cols[paste0("State ", i)], size=1) +
+    scale_y_continuous(limits=c(0,1), breaks=seq(0,1,0.25)) +
+    labs(title=paste0("ES=F Daily Market Regime ", i),
+         x="Date", y="Probability") +
+    theme_minimal(base_size=14)
+  
+  windows(); print(plots[[i]])
+}
+
+# Combine all three
+combined <- plots[[1]] / plots[[2]] / plots[[3]] + plot_layout(ncol=1)
+windows(); print(combined)
+
+# ================================
+# 8. Viterbi decoding & scatter plot of closing prices
+# ================================
+
+# Decode most likely state sequence
+vit_df <- viterbi(fit3)
+states <- vit_df$state
+
+# Combine with closing price (align with log returns)
+df_plot <- data.frame(
+  date  = train_df$date[-1],
+  Close = train_df$Close[-1],
+  State = factor(
+    states,
+    levels = 1:3, 
+    labels = c("Regime 1", "Regime 2", "Regime 3")
+  )
+)
+
+# Define colors
+state_cols <- c("Regime 1" = "#4E79A7",
+                "Regime 2" = "#F28E2B",
+                "Regime 3" = "#E15759")
+
+# Scatter plot
+p_regime <- ggplot(df_plot, aes(x=date, y=Close)) +
+  geom_point(aes(color=State), size=1.2, alpha=0.8) +
+  scale_color_manual(
+    values=state_cols,
+    drop=FALSE     # keep all regimes in legend even if not present
+  ) +
+  labs(
+    title = "HMM Viterbi decoded market regimes",
+    x = "Date",
+    y = "Closing price",
+    color = "Regimes"
+  ) +
+  theme_minimal(base_size=14)
+
+windows()
+plot(p_regime)
+
