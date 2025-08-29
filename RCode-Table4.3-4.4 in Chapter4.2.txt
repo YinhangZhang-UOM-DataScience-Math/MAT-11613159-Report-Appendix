@@ -1,0 +1,90 @@
+#This file contains all the R code for  Table4.3 and Table 4.4  in Chapter 4.2: One-step prediction of the Gaussian HMM 
+#After modifying the dataset file path, it can be directly copied and pasted into R to reproduce the results.
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# Before running this code, make sure to modify the input dataset path in the # 1. Load and prepare data in this code
+
+
+
+
+
+
+
+
+# -- 0. Install and load required package --
+if (!requireNamespace("depmixS4", quietly = TRUE)) install.packages("depmixS4")
+library(depmixS4)
+
+# -- 1. Load and prepare data --
+
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+# !!! IMPORTANT REMINDER !!! 
+#Modify "C:/Users/ZhangYinhang/ES_F_data.csv"  to your save path in the below
+
+df <- read.csv("C:/Users/ZhangYinhang/ES_F_data.csv", stringsAsFactors = FALSE)
+df$date  <- as.Date(df$Date)
+df$Price <- df$Close
+df <- df[order(df$date), ]
+
+# -- 2. Define training period --
+train_start <- as.Date("2022-06-23")
+train_end   <- as.Date("2024-12-23")
+df_trn <- subset(df, date >= train_start & date <= train_end)
+
+# -- 3. Compute log returns --
+df_trn$log_ret <- c(NA, diff(log(df_trn$Price)))
+df_trn <- na.omit(df_trn)
+data_trn <- data.frame(obs = df_trn$log_ret)
+
+# -- 4. Fit 3-state HMM model --
+set.seed(123)
+mod3 <- depmix(obs ~ 1, family = gaussian(), nstates = 3, data = data_trn)
+fit3 <- fit(mod3, verbose = FALSE)
+
+# -- 5. Extract forward probabilities α_n --
+fb <- forwardbackward(fit3)
+alpha_n <- fb$alpha[nrow(fb$alpha), ]
+posterior <- alpha_n / sum(alpha_n)
+
+# -- 6. Extract model parameters: transition matrix A and state means μ --
+pars <- getpars(fit3)
+nst <- 3
+A   <- matrix(pars[(nst+1):(nst+nst^2)], nst, nst, byrow = TRUE)
+mu  <- pars[(nst + nst^2 + 1):(nst + nst^2 + nst)]
+
+# -- 7. One-step-ahead prediction --
+pred_state_next <- as.numeric(posterior %*% A)
+pred_return_next <- sum(pred_state_next * mu)
+P_last <- tail(df_trn$Price, 1)
+pred_price_next <- P_last * exp(pred_return_next)
+
+# -- 8. Get actual next-day price for comparison --
+last_train_date <- max(df_trn$date)
+next_day_index <- which(df$date == last_train_date) + 1
+
+if (next_day_index <= nrow(df)) {
+  true_next_price <- df$Price[next_day_index]
+  true_next_date  <- df$date[next_day_index]
+
+  # -- 9. Calculate errors --
+  abs_error <- pred_price_next - true_next_price
+  pct_error <- abs_error / true_next_price * 100
+
+  # -- 10. Create summary table --
+  result_df <- data.frame(
+    Date              = true_next_date,
+    Predicted_Price   = round(pred_price_next, 2),
+    Actual_Price      = round(true_next_price, 2),
+    Absolute_Error    = round(abs_error, 2),
+    Percentage_Error  = paste0(round(pct_error, 2), "%")
+  )
+
+  # -- 11. Output result --
+  cat("=== One-step Forecast Summary ===\n")
+  print(result_df)
+} else {
+  cat("No true price available after training set end.\n")
+}
